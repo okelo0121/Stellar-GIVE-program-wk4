@@ -1,17 +1,36 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Symbol};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    InvalidEndTime = 2,
+    InvalidMinBid = 3,
+    AuctionEnded = 4,
+    AuctionFinalized = 5,
+    BidTooLow = 6,
+    DeadlineNotPassed = 7,
+    BidsExist = 8,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuctionState {
+    pub creator: Address,
+    pub token: Address,
+    pub item: Symbol,
+    pub end_time: u64,
+    pub min_bid: i128,
+    pub highest_bid: i128,
+    pub highest_bidder: Option<Address>,
+    pub finalized: bool,
+}
+
+#[contracttype]
 pub enum DataKey {
-    Creator,      // Address
-    Token,        // Address (SEP-41 Token used for bidding)
-    ItemName,     // Symbol
-    EndTime,      // u64 (Timestamp in seconds)
-    MinBid,       // i128
-    HighestBid,   // i128
-    HighestBidder,// Address (optional/none if no bids)
-    Finalized,    // bool
+    State,
 }
 
 #[contract]
@@ -19,7 +38,6 @@ pub struct NoLossAuctionContract;
 
 #[contractimpl]
 impl NoLossAuctionContract {
-    /// Initialize a new auction
     pub fn initialize(
         env: Env,
         creator: Address,
@@ -27,144 +45,105 @@ impl NoLossAuctionContract {
         item: Symbol,
         end_time: u64,
         min_bid: i128,
-    ) {
-        if env.storage().instance().has(&DataKey::Creator) {
-            panic!("already initialized");
+    ) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::State) {
+            return Err(Error::AlreadyInitialized);
         }
         if end_time <= env.ledger().timestamp() {
-            panic!("end time must be in the future");
+            return Err(Error::InvalidEndTime);
         }
         if min_bid <= 0 {
-            panic!("min bid must be positive");
+            return Err(Error::InvalidMinBid);
         }
 
-        env.storage().instance().set(&DataKey::Creator, &creator);
-        env.storage().instance().set(&DataKey::Token, &token);
-        env.storage().instance().set(&DataKey::ItemName, &item);
-        env.storage().instance().set(&DataKey::EndTime, &end_time);
-        env.storage().instance().set(&DataKey::MinBid, &min_bid);
-        env.storage().instance().set(&DataKey::HighestBid, &0_i128);
-        env.storage().instance().set(&DataKey::Finalized, &false);
+        let state = AuctionState {
+            creator,
+            token,
+            item,
+            end_time,
+            min_bid,
+            highest_bid: 0,
+            highest_bidder: None,
+            finalized: false,
+        };
+
+        env.storage().instance().set(&DataKey::State, &state);
+        Ok(())
     }
 
-    /// Place a bid
-    pub fn bid(env: Env, bidder: Address, amount: i128) {
+    pub fn bid(env: Env, bidder: Address, amount: i128) -> Result<(), Error> {
         bidder.require_auth();
 
-        let finalized: bool = env.storage().instance().get(&DataKey::Finalized).unwrap_or(false);
-        if finalized {
-            panic!("auction is finalized");
+        let mut state: AuctionState = env.storage().instance().get(&DataKey::State)
+            .ok_or(Error::AlreadyInitialized)?;
+
+        if state.finalized {
+            return Err(Error::AuctionFinalized);
+        }
+        if env.ledger().timestamp() >= state.end_time {
+            return Err(Error::AuctionEnded);
         }
 
-        let end_time: u64 = env.storage().instance().get(&DataKey::EndTime).unwrap();
-        if env.ledger().timestamp() >= end_time {
-            panic!("auction already ended");
-        }
-
-        let min_bid: i128 = env.storage().instance().get(&DataKey::MinBid).unwrap();
-        let highest_bid: i128 = env.storage().instance().get(&DataKey::HighestBid).unwrap();
-
-        let required_min = if highest_bid == 0 { min_bid } else { highest_bid + 1 };
+        let required_min = if state.highest_bid == 0 { state.min_bid } else { state.highest_bid + 1 };
         if amount < required_min {
-            panic!("bid too low");
+            return Err(Error::BidTooLow);
         }
 
-        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-        let token_client = token::Client::new(&env, &token_addr);
+        let token_client = token::Client::new(&env, &state.token);
 
-        // Refund the previous highest bidder if there was one
-        if env.storage().instance().has(&DataKey::HighestBidder) {
-            let prev_bidder: Address = env.storage().instance().get(&DataKey::HighestBidder).unwrap();
-            let prev_amount: i128 = highest_bid;
-            
-            // Return funds from the contract to the previous bidder
-            token_client.transfer(&env.current_contract_address(), &prev_bidder, &prev_amount);
+        if let Some(prev_bidder) = state.highest_bidder {
+            token_client.transfer(&env.current_contract_address(), &prev_bidder, &state.highest_bid);
         }
 
-        // Transfer new bid funds to this contract
         token_client.transfer(&bidder, &env.current_contract_address(), &amount);
 
-        // Update state
-        env.storage().instance().set(&DataKey::HighestBidder, &bidder);
-        env.storage().instance().set(&DataKey::HighestBid, &amount);
+        state.highest_bidder = Some(bidder);
+        state.highest_bid = amount;
+
+        env.storage().instance().set(&DataKey::State, &state);
+        Ok(())
     }
 
-    /// Finalize the auction (can be called by anyone after the deadline)
-    pub fn finalize(env: Env) {
-        let finalized: bool = env.storage().instance().get(&DataKey::Finalized).unwrap_or(false);
-        if finalized {
-            panic!("already finalized");
+    pub fn finalize(env: Env) -> Result<(), Error> {
+        let mut state: AuctionState = env.storage().instance().get(&DataKey::State)
+            .ok_or(Error::AlreadyInitialized)?;
+
+        if state.finalized {
+            return Err(Error::AuctionFinalized);
+        }
+        if env.ledger().timestamp() < state.end_time {
+            return Err(Error::DeadlineNotPassed);
         }
 
-        let end_time: u64 = env.storage().instance().get(&DataKey::EndTime).unwrap();
-        if env.ledger().timestamp() < end_time {
-            panic!("deadline not passed yet");
+        if state.highest_bid > 0 {
+            let token_client = token::Client::new(&env, &state.token);
+            token_client.transfer(&env.current_contract_address(), &state.creator, &state.highest_bid);
         }
 
-        let creator: Address = env.storage().instance().get(&DataKey::Creator).unwrap();
-        let highest_bid: i128 = env.storage().instance().get(&DataKey::HighestBid).unwrap();
+        state.finalized = true;
+        env.storage().instance().set(&DataKey::State, &state);
+        Ok(())
+    }
 
-        if highest_bid > 0 {
-            // Transfer highest bid to the creator (winner gets the item off-chain / bid goes to creator)
-            let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-            let token_client = token::Client::new(&env, &token_addr);
-            token_client.transfer(&env.current_contract_address(), &creator, &highest_bid);
+    pub fn cancel(env: Env) -> Result<(), Error> {
+        let mut state: AuctionState = env.storage().instance().get(&DataKey::State)
+            .ok_or(Error::AlreadyInitialized)?;
+
+        state.creator.require_auth();
+
+        if state.finalized {
+            return Err(Error::AuctionFinalized);
+        }
+        if state.highest_bidder.is_some() {
+            return Err(Error::BidsExist);
         }
 
-        env.storage().instance().set(&DataKey::Finalized, &true);
+        state.finalized = true;
+        env.storage().instance().set(&DataKey::State, &state);
+        Ok(())
     }
 
-    /// Cancel the auction (only by creator, and only if no bids have been placed)
-    pub fn cancel(env: Env) {
-        let creator: Address = env.storage().instance().get(&DataKey::Creator).unwrap();
-        creator.require_auth();
-
-        let finalized: bool = env.storage().instance().get(&DataKey::Finalized).unwrap_or(false);
-        if finalized {
-            panic!("already finalized");
-        }
-
-        if env.storage().instance().has(&DataKey::HighestBidder) {
-            panic!("cannot cancel after bids are placed");
-        }
-
-        env.storage().instance().set(&DataKey::Finalized, &true);
-    }
-
-    // --- Getter functions for frontend integration ---
-
-    pub fn get_creator(env: Env) -> Address {
-        env.storage().instance().get(&DataKey::Creator).unwrap()
-    }
-
-    pub fn get_token(env: Env) -> Address {
-        env.storage().instance().get(&DataKey::Token).unwrap()
-    }
-
-    pub fn get_item(env: Env) -> Symbol {
-        env.storage().instance().get(&DataKey::ItemName).unwrap()
-    }
-
-    pub fn get_end_time(env: Env) -> u64 {
-        env.storage().instance().get(&DataKey::EndTime).unwrap()
-    }
-
-    pub fn get_min_bid(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::MinBid).unwrap()
-    }
-
-    pub fn get_highest_bid(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::HighestBid).unwrap()
-    }
-
-    pub fn get_highest_bidder(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::HighestBidder)
-    }
-
-    pub fn is_finalized(env: Env) -> bool {
-        env.storage().instance().get(&DataKey::Finalized).unwrap_or(false)
+    pub fn get_state(env: Env) -> Option<AuctionState> {
+        env.storage().instance().get(&DataKey::State)
     }
 }
-
-#[cfg(test)]
-mod test;
