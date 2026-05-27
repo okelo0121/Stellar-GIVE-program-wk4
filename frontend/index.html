@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>No-Loss Auction Protocol | Soroban</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet">
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="index.css">
+  <!-- Stellar SDK and Freighter API CDNs -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/stellar-freighter-api/1.1.2/index.min.js"></script>
+</head>
+<body>
+  <div class="background-glow"></div>
+  
+  <header>
+    <div class="header-container">
+      <div class="logo">
+        <span class="gradient-text">GIVE</span> Auction
+      </div>
+      <div class="network-selector-container">
+        <label for="mode-select">Mode:</label>
+        <select id="mode-select" class="mode-dropdown">
+          <option value="mock">Simulated (Mock Mode - Quick Test)</option>
+          <option value="testnet">Stellar Testnet (Freighter Wallet)</option>
+        </select>
+        <button id="connect-btn" class="btn btn-primary connect-btn">Connect Wallet</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Active Auction Details -->
+    <section class="card status-card">
+      <div class="card-header">
+        <h2>Active Auction Status</h2>
+        <span id="auction-badge" class="badge badge-active">Active</span>
+      </div>
+      <div class="auction-grid">
+        <div class="status-item">
+          <span class="label">Item Name</span>
+          <span id="display-item-name" class="value">--</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Highest Bid</span>
+          <span id="display-highest-bid" class="value highlight-text">0.00 tokens</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Highest Bidder</span>
+          <span id="display-highest-bidder" class="value address-text">None</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Time Remaining</span>
+          <span id="display-countdown" class="value">00h 00m 00s</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Minimum Bid</span>
+          <span id="display-min-bid" class="value">--</span>
+        </div>
+        <div class="status-item">
+          <span class="label">Token Address</span>
+          <span id="display-token" class="value address-text">--</span>
+        </div>
+      </div>
+      
+      <!-- Progress Bar for Countdown -->
+      <div class="progress-bar-container">
+        <div id="countdown-progress" class="progress-bar-fill" style="width: 100%;"></div>
+      </div>
+    </section>
+
+    <div class="grid-two-columns">
+      <!-- Create & Admin Section -->
+      <div class="column-left">
+        <!-- Initialize Auction -->
+        <section class="card">
+          <h3>Create New Auction</h3>
+          <form id="init-form" class="form">
+            <div class="form-group">
+              <label for="creator-address">Creator Address</label>
+              <input type="text" id="creator-address" placeholder="e.g. GB..." required>
+            </div>
+            <div class="form-group">
+              <label for="token-address">SEP-41 Token Address</label>
+              <input type="text" id="token-address" placeholder="e.g. CD..." required>
+            </div>
+            <div class="form-group">
+              <label for="item-name">Item Name / Symbol</label>
+              <input type="text" id="item-name" placeholder="e.g. DigitalArt" required>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="min-bid">Min Bid (tokens)</label>
+                <input type="number" id="min-bid" min="1" placeholder="e.g. 100" required>
+              </div>
+              <div class="form-group">
+                <label for="duration">Duration (seconds)</label>
+                <input type="number" id="duration" min="10" placeholder="e.g. 300" required>
+              </div>
+            </div>
+            <button type="submit" class="btn btn-gradient btn-full">Initialize Auction</button>
+          </form>
+        </section>
+
+        <!-- Admin Controls -->
+        <section class="card admin-card">
+          <h3>Auction Management</h3>
+          <p class="section-desc">Finalize releases the highest bid to the creator. Cancel only works if no bids have been placed.</p>
+          <div class="btn-group">
+            <button id="finalize-btn" class="btn btn-success flex-1">Finalize Auction</button>
+            <button id="cancel-btn" class="btn btn-danger flex-1">Cancel Auction</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- Bidding & History Section -->
+      <div class="column-right">
+        <!-- Place a Bid -->
+        <section class="card">
+          <h3>Place a Bid</h3>
+          <form id="bid-form" class="form">
+            <div class="form-group">
+              <label for="bidder-address">Bidder Address</label>
+              <input type="text" id="bidder-address" placeholder="e.g. GC..." required>
+            </div>
+            <div class="form-group">
+              <label for="bid-amount">Bid Amount (tokens)</label>
+              <input type="number" id="bid-amount" min="1" placeholder="e.g. 150" required>
+            </div>
+            <button type="submit" class="btn btn-primary btn-full">Submit Bid</button>
+          </form>
+        </section>
+
+        <!-- Live Activity Log -->
+        <section class="card log-card">
+          <h3>Activity Log</h3>
+          <div id="log-container" class="log-container">
+            <div class="log-entry log-info">System initialized in Mock mode. Feel free to place bids or create custom auctions.</div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="footer-container">
+      <p>No-Loss Auction Protocol built on Stellar Soroban</p>
+      <p id="contract-display" class="footer-contract">Contract Status: Mock Mode (No deployment required)</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
